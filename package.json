@@ -1,3 +1,6 @@
 {
-  "type": "module"
+  "name": "cs2-workshop-knowledge-scraper",
+  "version": "1.0.0",
+  "type": "module",
+  "dependencies": {}
 }
