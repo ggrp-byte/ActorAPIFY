@@ -10,9 +10,9 @@ const knowledge = [];
 const skins = [];
 
 // =====================
-// 1. CRAWL CS2 WORKSHOP
+// 1. CS2 WORKSHOP CRAWL (OFFICIAL SITE)
 // =====================
-const crawler = new CheerioCrawler({
+const csCrawler = new CheerioCrawler({
     async requestHandler({ $, request }) {
 
         const text = $('body').text();
@@ -34,85 +34,36 @@ const crawler = new CheerioCrawler({
     maxRequestsPerCrawl: 50
 });
 
-await crawler.run([
+await csCrawler.run([
     'https://www.counter-strike.net/workshop/workshop'
 ]);
 
 // =====================
-// 2. COLOR HEURISTIC
+// 2. STEAM WORKSHOP HTML (NO API - STABLE)
 // =====================
-function estimateColorFromUrl(url = '') {
-    const lower = url.toLowerCase();
+const steamCrawler = new CheerioCrawler({
+    async requestHandler({ $, request }) {
 
-    const colors = [];
+        const items = $('.workshopItem');
 
-    if (lower.includes('red')) colors.push('red');
-    if (lower.includes('blue')) colors.push('blue');
-    if (lower.includes('black')) colors.push('black');
-    if (lower.includes('white')) colors.push('white');
-    if (lower.includes('gold')) colors.push('gold');
+        items.each((_, el) => {
 
-    return colors;
-}
+            const name = $(el).find('.workshopItemTitle').text().trim();
+            const img = $(el).find('img').attr('src');
+            const link = $(el).find('a').attr('href');
 
-// =====================
-// 3. STEAM API (FULL FIXED SAFE MODE)
-// =====================
-let start = 0;
-const limit = 100;
+            const tags = [];
 
-while (start < 500) {
-
-    try {
-        const params = new URLSearchParams({
-            appid: '730',
-            numperpage: limit.toString(),
-            startindex: start.toString(),
-            return_tags: '1',
-            return_metadata: '1'
-        });
-
-        const url = `https://api.steampowered.com/IPublishedFileService/QueryFiles/v1/?${params.toString()}`;
-
-        const res = await fetch(url, {
-            method: 'GET',
-            headers: {
-                'User-Agent': 'Mozilla/5.0',
-                'Accept': 'application/json'
-            }
-        });
-
-        const text = await res.text();
-
-        // 🚨 SAFE PARSE (Steam czasem zwraca HTML)
-        let data;
-        try {
-            data = JSON.parse(text);
-        } catch (e) {
-            console.log('Steam API blocked or invalid response → stopping');
-            break;
-        }
-
-        const items = data?.response?.publishedfiledetails || [];
-
-        if (!items.length) break;
-
-        for (const item of items) {
-
-            const preview = item.preview_url || null;
-            const icon = item.preview_file_url || null;
-
-            const tags = item.tags?.map(t => t.tag) || [];
+            $(el).find('.workshopTags a').each((_, tagEl) => {
+                tags.push($(tagEl).text().trim());
+            });
 
             skins.push({
-                id: item.publishedfileid,
-                name: item.title,
-                description: item.description,
+                name,
+                link,
                 tags,
-
                 images: {
-                    preview,
-                    icon
+                    preview: img || null
                 },
 
                 pattern: {
@@ -120,45 +71,37 @@ while (start < 500) {
                         t.toLowerCase().includes('pattern') ||
                         t.toLowerCase().includes('finish') ||
                         t.toLowerCase().includes('wear')
-                    ),
-
-                    visual_guess: estimateColorFromUrl(preview || '')
+                    )
                 }
             });
-        }
+        });
+    },
+    maxRequestsPerCrawl: 5
+});
 
-        start += limit;
-
-    } catch (err) {
-        console.log('Steam API error:', err.message);
-        break;
-    }
-}
+// Steam browse page (HTML stable source)
+await steamCrawler.run([
+    'https://steamcommunity.com/workshop/browse/?appid=730&section=readytouseitems'
+]);
 
 // =====================
-// 4. STATISTICS
+// 3. SIMPLE ANALYSIS
 // =====================
 const tagStats = {};
-const colorStats = {};
 
 for (const skin of skins) {
-
     for (const tag of skin.tags || []) {
         tagStats[tag] = (tagStats[tag] || 0) + 1;
     }
-
-    for (const c of skin.pattern.visual_guess || []) {
-        colorStats[c] = (colorStats[c] || 0) + 1;
-    }
 }
 
 // =====================
-// 5. FINAL OUTPUT
+// 4. FINAL JSON
 // =====================
 const final = {
     meta: {
-        source: "CS2 Workshop + Steam API",
-        mode: "stable scraper (fixed version)",
+        source: "CS2 Workshop + Steam HTML",
+        mode: "stable-no-api-version",
         generated_at: new Date().toISOString()
     },
 
@@ -167,8 +110,7 @@ const final = {
     skins_db: skins,
 
     visual_intelligence: {
-        tag_distribution: tagStats,
-        color_distribution: colorStats
+        tag_distribution: tagStats
     }
 };
 
