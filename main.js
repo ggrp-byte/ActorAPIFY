@@ -10,98 +10,129 @@ const knowledge = [];
 const skins = [];
 
 // =====================
-// 1. CS2 WORKSHOP CRAWL (OFFICIAL SITE)
+// 1. SAFE COLOR HEURISTIC
 // =====================
-const csCrawler = new CheerioCrawler({
-    async requestHandler({ $, request }) {
+function estimateColorFromUrl(url = '') {
+    const lower = url.toLowerCase();
+    const colors = [];
 
-        const text = $('body').text();
+    if (lower.includes('red')) colors.push('red');
+    if (lower.includes('blue')) colors.push('blue');
+    if (lower.includes('black')) colors.push('black');
+    if (lower.includes('white')) colors.push('white');
+    if (lower.includes('gold')) colors.push('gold');
 
-        const links = [];
-        $('a').each((_, el) => {
-            const href = $(el).attr('href');
-            if (href && href.includes('counter-strike.net')) {
-                links.push(href);
-            }
-        });
+    return colors;
+}
 
+// =====================
+// 2. CS2 + STEAM WORKSHOP FULL CRAWLER (RECURSIVE)
+// =====================
+const crawler = new CheerioCrawler({
+    maxRequestsPerCrawl: 2000,
+
+    async requestHandler({ $, request, enqueueLinks }) {
+
+        const url = request.url;
+        const bodyText = $('body').text();
+
+        // =====================
+        // SAVE PAGE DATA
+        // =====================
         knowledge.push({
-            url: request.url,
-            text: text.slice(0, 5000),
-            links
+            url,
+            text: bodyText.slice(0, 4000)
         });
-    },
-    maxRequestsPerCrawl: 50
-});
 
-await csCrawler.run([
-    'https://www.counter-strike.net/workshop/workshop'
-]);
+        // =====================
+        // EXTRACT SKINS (STEAM WORKSHOP STYLE BLOCKS)
+        // =====================
+        $('.workshopItem, .workshop_item, .collectionItem').each((_, el) => {
 
-// =====================
-// 2. STEAM WORKSHOP HTML (NO API - STABLE)
-// =====================
-const steamCrawler = new CheerioCrawler({
-    async requestHandler({ $, request }) {
+            const name =
+                $(el).find('.workshopItemTitle, .workshop_item_title').text().trim() ||
+                $(el).find('h1, h2, h3').first().text().trim();
 
-        const items = $('.workshopItem');
+            const img =
+                $(el).find('img').attr('src') ||
+                $(el).find('img').attr('data-src');
 
-        items.each((_, el) => {
-
-            const name = $(el).find('.workshopItemTitle').text().trim();
-            const img = $(el).find('img').attr('src');
-            const link = $(el).find('a').attr('href');
+            const link =
+                $(el).find('a').attr('href');
 
             const tags = [];
 
-            $(el).find('.workshopTags a').each((_, tagEl) => {
-                tags.push($(tagEl).text().trim());
+            $(el).find('.workshopTags a, .tags a').each((_, t) => {
+                tags.push($(t).text().trim());
             });
 
-            skins.push({
-                name,
-                link,
-                tags,
-                images: {
-                    preview: img || null
-                },
+            if (name || img) {
+                skins.push({
+                    name: name || 'unknown',
+                    link: link || url,
 
-                pattern: {
-                    tags_related: tags.filter(t =>
-                        t.toLowerCase().includes('pattern') ||
-                        t.toLowerCase().includes('finish') ||
-                        t.toLowerCase().includes('wear')
-                    )
-                }
-            });
+                    tags,
+
+                    images: {
+                        preview: img || null
+                    },
+
+                    pattern: {
+                        tags_related: tags.filter(t =>
+                            t.toLowerCase().includes('pattern') ||
+                            t.toLowerCase().includes('finish') ||
+                            t.toLowerCase().includes('wear')
+                        ),
+
+                        visual_guess: estimateColorFromUrl(img || '')
+                    }
+                });
+            }
         });
-    },
-    maxRequestsPerCrawl: 5
+
+        // =====================
+        // RECURSIVE LINK FOLLOWING (FULL SCRAPE)
+        // =====================
+        await enqueueLinks({
+            selector: 'a',
+            globs: [
+                'https://www.counter-strike.net/**',
+                'https://steamcommunity.com/workshop/**'
+            ]
+        });
+    }
 });
 
-// Steam browse page (HTML stable source)
-await steamCrawler.run([
-    'https://steamcommunity.com/workshop/browse/?appid=730&section=readytouseitems'
+// START POINTS
+await crawler.run([
+    'https://www.counter-strike.net/workshop/workshop',
+    'https://steamcommunity.com/workshop/browse/?appid=730'
 ]);
 
 // =====================
-// 3. SIMPLE ANALYSIS
+// 3. STATS
 // =====================
 const tagStats = {};
+const colorStats = {};
 
 for (const skin of skins) {
+
     for (const tag of skin.tags || []) {
         tagStats[tag] = (tagStats[tag] || 0) + 1;
+    }
+
+    for (const c of skin.pattern.visual_guess || []) {
+        colorStats[c] = (colorStats[c] || 0) + 1;
     }
 }
 
 // =====================
-// 4. FINAL JSON
+// 4. FINAL JSON EXPORT (ONE OUTPUT)
 // =====================
 const final = {
     meta: {
-        source: "CS2 Workshop + Steam HTML",
-        mode: "stable-no-api-version",
+        source: "CS2 FULL SCRAPER FINAL",
+        mode: "recursive-html-crawler",
         generated_at: new Date().toISOString()
     },
 
@@ -110,10 +141,12 @@ const final = {
     skins_db: skins,
 
     visual_intelligence: {
-        tag_distribution: tagStats
+        tag_distribution: tagStats,
+        color_distribution: colorStats
     }
 };
 
+// SINGLE EXPORT (IMPORTANT)
 await Actor.pushData(final);
 
 await Actor.exit();
