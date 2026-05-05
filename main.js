@@ -39,7 +39,7 @@ await crawler.run([
 ]);
 
 // =====================
-// 2. SIMPLE COLOR HEURISTIC
+// 2. COLOR HEURISTIC
 // =====================
 function estimateColorFromUrl(url = '') {
     const lower = url.toLowerCase();
@@ -56,67 +56,87 @@ function estimateColorFromUrl(url = '') {
 }
 
 // =====================
-// 3. STEAM API (FIXED GET REQUEST)
+// 3. STEAM API (FULL FIXED SAFE MODE)
 // =====================
 let start = 0;
 const limit = 100;
 
 while (start < 500) {
 
-    const params = new URLSearchParams({
-        appid: '730',
-        numperpage: limit.toString(),
-        startindex: start.toString(),
-        return_tags: '1',
-        return_metadata: '1'
-    });
+    try {
+        const params = new URLSearchParams({
+            appid: '730',
+            numperpage: limit.toString(),
+            startindex: start.toString(),
+            return_tags: '1',
+            return_metadata: '1'
+        });
 
-    const res = await fetch(
-        `https://api.steampowered.com/IPublishedFileService/QueryFiles/v1/?${params.toString()}`
-    );
+        const url = `https://api.steampowered.com/IPublishedFileService/QueryFiles/v1/?${params.toString()}`;
 
-    const data = await res.json();
-    const items = data?.response?.publishedfiledetails || [];
-
-    if (!items.length) break;
-
-    for (const item of items) {
-
-        const preview = item.preview_url || null;
-        const icon = item.preview_file_url || null;
-
-        const tags = item.tags?.map(t => t.tag) || [];
-
-        skins.push({
-            id: item.publishedfileid,
-            name: item.title,
-            description: item.description,
-            tags,
-
-            // 🖼️ IMAGES
-            images: {
-                preview,
-                icon
-            },
-
-            // 🎨 pattern / style approximation
-            pattern: {
-                tags_related: tags.filter(t =>
-                    t.toLowerCase().includes('pattern') ||
-                    t.toLowerCase().includes('finish') ||
-                    t.toLowerCase().includes('wear')
-                ),
-
-                visual_guess: estimateColorFromUrl(preview || '')
+        const res = await fetch(url, {
+            method: 'GET',
+            headers: {
+                'User-Agent': 'Mozilla/5.0',
+                'Accept': 'application/json'
             }
         });
-    }
 
-    start += limit;
+        const text = await res.text();
+
+        // 🚨 SAFE PARSE (Steam czasem zwraca HTML)
+        let data;
+        try {
+            data = JSON.parse(text);
+        } catch (e) {
+            console.log('Steam API blocked or invalid response → stopping');
+            break;
+        }
+
+        const items = data?.response?.publishedfiledetails || [];
+
+        if (!items.length) break;
+
+        for (const item of items) {
+
+            const preview = item.preview_url || null;
+            const icon = item.preview_file_url || null;
+
+            const tags = item.tags?.map(t => t.tag) || [];
+
+            skins.push({
+                id: item.publishedfileid,
+                name: item.title,
+                description: item.description,
+                tags,
+
+                images: {
+                    preview,
+                    icon
+                },
+
+                pattern: {
+                    tags_related: tags.filter(t =>
+                        t.toLowerCase().includes('pattern') ||
+                        t.toLowerCase().includes('finish') ||
+                        t.toLowerCase().includes('wear')
+                    ),
+
+                    visual_guess: estimateColorFromUrl(preview || '')
+                }
+            });
+        }
+
+        start += limit;
+
+    } catch (err) {
+        console.log('Steam API error:', err.message);
+        break;
+    }
 }
 
 // =====================
-// 4. STATISTICS (NO AI)
+// 4. STATISTICS
 // =====================
 const tagStats = {};
 const colorStats = {};
@@ -133,12 +153,12 @@ for (const skin of skins) {
 }
 
 // =====================
-// 5. FINAL OUTPUT JSON
+// 5. FINAL OUTPUT
 // =====================
 const final = {
     meta: {
         source: "CS2 Workshop + Steam API",
-        mode: "statistical scraper (no AI)",
+        mode: "stable scraper (fixed version)",
         generated_at: new Date().toISOString()
     },
 
