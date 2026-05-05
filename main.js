@@ -1,118 +1,137 @@
 import { Actor } from 'apify';
-import { CheerioCrawler, RequestQueue } from 'crawlee';
+import { CheerioCrawler } from 'crawlee';
 
 await Actor.init();
 
-// Przechowalnie zebranych danych
+// Zbiory wynikowe
 const knowledgeBase = [];
 const skinsDb = [];
 
-console.log('🔍 Rozpoczynam skanowanie CS2 Workshop...');
+// ===================== 1. CRAWLER =====================
+console.log('🕷️ Rozpoczynam skanowanie CS2 Workshop...');
 
-// 1. CRAWLER – zbieranie treści z głównej strony i podstron
-const requestQueue = await RequestQueue.open();
-await requestQueue.addRequest({ url: 'https://www.counter-strike.net/workshop/workshop' });
+let crawler;
+try {
+    const requestQueue = await Actor.openRequestQueue();
 
-const crawler = new CheerioCrawler({
-    requestQueue,
-    maxRequestsPerCrawl: 100, // ogranicza liczbę podstron – możesz zwiększyć
+    // Dodaj stronę startową
+    await requestQueue.addRequest({
+        url: 'https://www.counter-strike.net/workshop/workshop',
+    });
 
-    async requestHandler({ $, request }) {
-        const pageText = $('body').text().replace(/\s+/g, ' ').trim();
+    crawler = new CheerioCrawler({
+        requestQueue,
+        maxRequestsPerCrawl: 200, // zwiększ lub zmniejsz wg potrzeb
+        maxRequestRetries: 2,
 
-        knowledgeBase.push({
-            url: request.url,
-            text: pageText.slice(0, 5000), // pierwsze 5000 znaków, aby plik nie był gigantyczny
-            crawledAt: new Date().toISOString(),
-        });
+        async requestHandler({ $, request }) {
+            const title = $('title').text().trim();
+            const bodyText = $('body').text().replace(/\s+/g, ' ').trim();
 
-        // Dodajemy wszystkie linki z domeny counter-strike.net do kolejki
-        await crawler.addRequests(
-            $('a[href^="https://www.counter-strike.net"]')
-                .map((_, el) => ({ url: $(el).attr('href') }))
-                .get()
-        );
-    },
-});
+            knowledgeBase.push({
+                url: request.url,
+                title,
+                textPreview: bodyText.slice(0, 8000), // zachowaj pierwsze 8000 znaków
+                crawledAt: new Date().toISOString(),
+            });
 
-await crawler.run();
-console.log(`✅ Zakończono crawlowanie. Znaleziono ${knowledgeBase.length} stron.`);
+            // Odkrywaj linki wewnętrzne i dodawaj do kolejki
+            const links = [];
+            $('a[href]').each((_, el) => {
+                const href = $(el).attr('href');
+                if (href && href.startsWith('https://www.counter-strike.net')) {
+                    links.push({ url: href });
+                }
+            });
 
-// 2. POBRANIE DANYCH Z STEAM API (warsztat CS2, appid=730)
+            if (links.length > 0) {
+                await crawler.addRequests(links);
+            }
+        },
+    });
+
+    await crawler.run();
+    console.log(`✅ Crawlowanie zakończone. Znaleziono ${knowledgeBase.length} stron.`);
+} catch (err) {
+    console.error('❌ Błąd podczas crawlowania:', err.message);
+    // Nie przerywaj aktora – przejdź do API Steam
+}
+
+// ===================== 2. STEAM API =====================
 console.log('🖼️ Pobieranie danych z Steam Workshop API...');
 
 let startIndex = 0;
-const perPage = 100; // maksymalnie 100 na zapytanie
-const maxItems = 1000; // bezpieczny limit – możesz zwiększyć
+const perPage = 100;
+const maxItems = 2000; // maksymalna liczba skinów do pobrania (zmień w razie potrzeby)
 
 while (startIndex < maxItems) {
-    const url = `https://api.steampowered.com/IPublishedFileService/QueryFiles/v1/?appid=730&numperpage=${perPage}&startindex=${startIndex}&return_tags=1&return_metadata=1`;
+    const apiUrl = `https://api.steampowered.com/IPublishedFileService/QueryFiles/v1/?appid=730&numperpage=${perPage}&startindex=${startIndex}&return_tags=1&return_metadata=1&key=`; // klucz nie jest wymagany dla publicznych danych
 
-    let response;
     try {
-        response = await fetch(url);
+        const response = await fetch(apiUrl);
+        if (!response.ok) {
+            console.error(`Steam API zwrócił status ${response.status}. Przerywam.`);
+            break;
+        }
+
+        const data = await response.json();
+        const items = data?.response?.publishedfiledetails;
+
+        if (!items || items.length === 0) {
+            console.log('Brak nowych rekordów – koniec pobierania.');
+            break;
+        }
+
+        for (const item of items) {
+            const previewUrl = item.preview_url || '';
+            const iconUrl = item.preview_file_url || '';
+
+            // Prosta heurystyka kolorów z URL obrazka
+            const colors = [];
+            const lowUrl = previewUrl.toLowerCase();
+            if (lowUrl.includes('red')) colors.push('red');
+            if (lowUrl.includes('blue')) colors.push('blue');
+            if (lowUrl.includes('black')) colors.push('black');
+            if (lowUrl.includes('white')) colors.push('white');
+            if (lowUrl.includes('gold')) colors.push('gold');
+            if (lowUrl.includes('green')) colors.push('green');
+            if (lowUrl.includes('purple')) colors.push('purple');
+
+            const tags = (item.tags || []).map(t => t.tag);
+            const patternTags = tags.filter(t =>
+                /pattern|finish|wear|camo|spray|marble|fade|case|hardened/i.test(t)
+            );
+
+            skinsDb.push({
+                id: item.publishedfileid,
+                title: item.title,
+                description: item.description || '',
+                tags,
+                images: {
+                    preview: previewUrl || null,
+                    icon: iconUrl || null,
+                },
+                pattern_guess: {
+                    related_tags: patternTags,
+                    dominant_colors: colors,
+                },
+            });
+        }
+
+        startIndex += perPage;
+        console.log(`   Pobrano ${skinsDb.length} skinów…`);
+
+        // Czekaj 0.5 sekundy między zapytaniami, aby nie przeciążać API
+        await new Promise(resolve => setTimeout(resolve, 500));
     } catch (err) {
-        console.error('❌ Błąd połączenia z Steam API:', err.message);
+        console.error('❌ Błąd podczas zapytania Steam API:', err.message);
         break;
     }
-
-    if (!response.ok) {
-        console.error(`❌ Steam API zwrócił status ${response.status}`);
-        break;
-    }
-
-    let data;
-    try {
-        data = await response.json();
-    } catch (err) {
-        console.error('❌ Nieprawidłowa odpowiedź JSON:', err.message);
-        break;
-    }
-
-    const items = data?.response?.publishedfiledetails;
-    if (!items || items.length === 0) break;
-
-    for (const item of items) {
-        const previewUrl = item.preview_url || '';
-        const iconUrl = item.preview_file_url || '';
-
-        // Heurystyka kolorów na podstawie URL obrazka
-        const colors = [];
-        const lowUrl = previewUrl.toLowerCase();
-        if (lowUrl.includes('red')) colors.push('red');
-        if (lowUrl.includes('blue')) colors.push('blue');
-        if (lowUrl.includes('black')) colors.push('black');
-        if (lowUrl.includes('white')) colors.push('white');
-        if (lowUrl.includes('gold')) colors.push('gold');
-
-        const tags = (item.tags || []).map(t => t.tag);
-        const patternTags = tags.filter(t =>
-            /pattern|finish|wear|camo|spray|marble/i.test(t)
-        );
-
-        skinsDb.push({
-            id: item.publishedfileid,
-            title: item.title,
-            description: item.description || '',
-            tags,
-            images: {
-                preview: previewUrl || null,
-                icon: iconUrl || null,
-            },
-            pattern_guess: {
-                related_tags: patternTags,
-                dominant_colors: colors,
-            },
-        });
-    }
-
-    startIndex += perPage;
-    console.log(`   Pobrano ${skinsDb.length} skinów...`);
 }
 
 console.log(`✅ Pobrano łącznie ${skinsDb.length} rekordów z API Steam.`);
 
-// 3. OBLICZENIE STATYSTYK (bez AI)
+// ===================== 3. ANALIZA STATYSTYCZNA =====================
 const tagCounts = {};
 const colorCounts = {};
 
@@ -125,7 +144,7 @@ for (const skin of skinsDb) {
     }
 }
 
-// 4. KOŃCOWY PLIK JSON
+// ===================== 4. FINALNY JSON =====================
 const finalOutput = {
     meta: {
         source: 'CS2 Workshop + Steam API (public)',
@@ -141,8 +160,11 @@ const finalOutput = {
     },
 };
 
-// 5. ZAPISZ JAKO JEDEN PLIK W WYNIKACH
-await Actor.pushData(finalOutput);
+try {
+    await Actor.pushData(finalOutput);
+    console.log('🎉 Dane zapisane w Dataset!');
+} catch (err) {
+    console.error('❌ Błąd zapisu danych:', err.message);
+}
 
-console.log('🎉 Gotowe! Plik JSON zapisany w Dataset.');
 await Actor.exit();
