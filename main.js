@@ -1,6 +1,5 @@
 import { Actor } from 'apify';
 import { CheerioCrawler } from 'crawlee';
-import fetch from 'node-fetch';
 
 await Actor.init();
 
