@@ -39,10 +39,9 @@ await crawler.run([
 ]);
 
 // =====================
-// 2. COLOR ANALYSIS (lightweight)
+// 2. SIMPLE COLOR HEURISTIC
 // =====================
-function estimateColorFromUrl(url) {
-    // bardzo uproszczone: heurystyka na podstawie nazwy pliku
+function estimateColorFromUrl(url = '') {
     const lower = url.toLowerCase();
 
     const colors = [];
@@ -57,34 +56,33 @@ function estimateColorFromUrl(url) {
 }
 
 // =====================
-// 3. STEAM API (FULL + IMAGES)
+// 3. STEAM API (FIXED GET REQUEST)
 // =====================
 let start = 0;
 const limit = 100;
 
-while (start < 500) { // możesz zwiększyć
+while (start < 500) {
+
+    const params = new URLSearchParams({
+        appid: '730',
+        numperpage: limit.toString(),
+        startindex: start.toString(),
+        return_tags: '1',
+        return_metadata: '1'
+    });
+
     const res = await fetch(
-        'https://api.steampowered.com/IPublishedFileService/QueryFiles/v1/',
-        {
-            method: 'POST',
-            body: new URLSearchParams({
-                appid: 730,
-                numperpage: limit,
-                startindex: start,
-                return_tags: true,
-                return_metadata: true
-            })
-        }
+        `https://api.steampowered.com/IPublishedFileService/QueryFiles/v1/?${params.toString()}`
     );
 
     const data = await res.json();
     const items = data?.response?.publishedfiledetails || [];
 
-    if (items.length === 0) break;
+    if (!items.length) break;
 
     for (const item of items) {
 
-        const preview = item.preview_url || item.url || null;
+        const preview = item.preview_url || null;
         const icon = item.preview_file_url || null;
 
         const tags = item.tags?.map(t => t.tag) || [];
@@ -101,12 +99,12 @@ while (start < 500) { // możesz zwiększyć
                 icon
             },
 
-            // 🎨 pattern approximation
+            // 🎨 pattern / style approximation
             pattern: {
                 tags_related: tags.filter(t =>
-                    t.includes('pattern') ||
-                    t.includes('finish') ||
-                    t.includes('wear')
+                    t.toLowerCase().includes('pattern') ||
+                    t.toLowerCase().includes('finish') ||
+                    t.toLowerCase().includes('wear')
                 ),
 
                 visual_guess: estimateColorFromUrl(preview || '')
@@ -118,7 +116,7 @@ while (start < 500) { // możesz zwiększyć
 }
 
 // =====================
-// 4. STYLE ANALYSIS (no AI, only stats)
+// 4. STATISTICS (NO AI)
 // =====================
 const tagStats = {};
 const colorStats = {};
@@ -135,12 +133,12 @@ for (const skin of skins) {
 }
 
 // =====================
-// 5. FINAL JSON
+// 5. FINAL OUTPUT JSON
 // =====================
 const final = {
     meta: {
         source: "CS2 Workshop + Steam API",
-        mode: "no-ai-statistical-analysis",
+        mode: "statistical scraper (no AI)",
         generated_at: new Date().toISOString()
     },
 
